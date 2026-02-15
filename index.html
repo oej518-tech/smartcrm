@@ -451,18 +451,18 @@
             },
             logout: function() { pb.authStore.clear(); },
             isLoggedIn: function() { return pb.authStore.isValid; },
-            getUser: function() { return pb.authStore.record; },
+            getUser: function() { return pb.authStore.model; },
             getToken: function() { return pb.authStore.token; },
 
             listCustomers: function() {
                 return pb.collection('customers').getFullList({
-                    filter: 'owner = "' + pb.authStore.record.id + '"',
+                    filter: 'owner = "' + pb.authStore.model.id + '"',
                     sort: '-created',
                 }).then(function(records) { return records.map(mapPBRecord); });
             },
             createCustomer: function(data) {
                 return pb.collection('customers').create({
-                    ...data, owner: pb.authStore.record.id,
+                    ...data, owner: pb.authStore.model.id,
                 }).then(mapPBRecord);
             },
             updateCustomer: function(id, data) {
@@ -474,13 +474,13 @@
 
             listDeals: function() {
                 return pb.collection('deals').getFullList({
-                    filter: 'owner = "' + pb.authStore.record.id + '"',
+                    filter: 'owner = "' + pb.authStore.model.id + '"',
                     sort: '-created',
                 }).then(function(records) { return records.map(mapPBRecord); });
             },
             createDeal: function(data) {
                 return pb.collection('deals').create({
-                    ...data, owner: pb.authStore.record.id,
+                    ...data, owner: pb.authStore.model.id,
                 }).then(mapPBRecord);
             },
             updateDeal: function(id, data) {
@@ -492,13 +492,13 @@
 
             listInteractions: function() {
                 return pb.collection('interactions').getFullList({
-                    filter: 'owner = "' + pb.authStore.record.id + '"',
+                    filter: 'owner = "' + pb.authStore.model.id + '"',
                     sort: '-created',
                 }).then(function(records) { return records.map(mapPBRecord); });
             },
             createInteraction: function(data) {
                 return pb.collection('interactions').create({
-                    ...data, owner: pb.authStore.record.id,
+                    ...data, owner: pb.authStore.model.id,
                 }).then(mapPBRecord);
             },
             updateInteraction: function(id, data) {
@@ -662,12 +662,12 @@
         const useAuth = () => React.useContext(AuthContext);
 
         function AuthProvider({ children }) {
-            const [user, setUser] = useState(pb.authStore.isValid ? pb.authStore.record : null);
+            const [user, setUser] = useState(pb.authStore.isValid ? pb.authStore.model : null);
             const [loading, setLoading] = useState(true);
 
             useEffect(function() {
                 if (pb.authStore.isValid) {
-                    setUser(pb.authStore.record);
+                    setUser(pb.authStore.model);
                 } else {
                     setUser(null);
                 }
