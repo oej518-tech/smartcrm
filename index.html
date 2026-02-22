@@ -507,6 +507,53 @@
             deleteInteraction: function(id) {
                 return pb.collection('interactions').delete(id);
             },
+
+            // --- Team (上下線) ---
+            addTeamMember: async function(email) {
+                var results = await pb.collection('users').getFullList({ filter: 'email = "' + email.trim() + '"' });
+                if (!results.length) throw new Error('找不到此用戶，請確認 email 是否正確');
+                var target = results[0];
+                if (target.id === pb.authStore.model.id) throw new Error('不能新增自己為下線');
+                if (target.invitedBy) throw new Error('此用戶已有上線');
+                return pb.collection('users').update(target.id, { invitedBy: pb.authStore.model.id });
+            },
+            removeTeamMember: function(userId) {
+                return pb.collection('users').update(userId, { invitedBy: '' });
+            },
+            listTeamMembers: function() {
+                return pb.collection('users').getFullList({
+                    filter: 'invitedBy = "' + pb.authStore.model.id + '"',
+                    sort: '-created',
+                });
+            },
+            listAllTeamData: async function() {
+                var members = await pb.collection('users').getFullList({
+                    filter: 'invitedBy = "' + pb.authStore.model.id + '"',
+                    sort: '-created',
+                });
+                return Promise.all(members.map(async function(member) {
+                    var [customers, deals] = await Promise.all([
+                        pb.collection('customers').getFullList({
+                            filter: 'owner = "' + member.id + '"',
+                        }).then(function(r) { return r.map(mapPBRecord); }),
+                        pb.collection('deals').getFullList({
+                            filter: 'owner = "' + member.id + '"',
+                        }).then(function(r) { return r.map(mapPBRecord); }),
+                    ]);
+                    var closedDeals = deals.filter(function(d) { return d.stage === 'closed'; });
+                    return {
+                        id: member.id,
+                        name: member.name || member.email.split('@')[0],
+                        email: member.email,
+                        deals: closedDeals.length,
+                        value: closedDeals.reduce(function(s, d) { return s + (d.value || 0); }, 0),
+                        totalDeals: deals.length,
+                        totalCustomers: customers.length,
+                        customers: customers,
+                        allDeals: deals,
+                    };
+                }));
+            },
         };
 
         const STATUS_MAP = {
@@ -739,12 +786,7 @@
             { id: 'i6', customerId: 'c4', type: 'email', title: '初步合作提案', content: '寄出初步合作提案，包含三種方案比較表。', createdAt: now - 5*day },
             { id: 'i7', customerId: 'c1', type: 'note', title: '競品評估中', content: '客戶內部正在評估競品方案，需盡快跟進。主要競品是 Salesforce 和 HubSpot，我們的優勢在於在地化服務和價格。', createdAt: now - 1*day },
         ];
-        const seedTeam = [
-            { id: 't1', name: '王小明', role: 'salesperson', deals: 18, value: 280000, target: 300000 },
-            { id: 't2', name: '李美麗', role: 'salesperson', deals: 12, value: 210000, target: 250000 },
-            { id: 't3', name: '張大力', role: 'salesperson', deals: 15, value: 180000, target: 250000 },
-            { id: 't4', name: '陳小華', role: 'salesperson', deals: 8, value: 90000, target: 200000 },
-        ];
+
         const seedPlugins = [
             { id: 'p1', name: '進階報表分析', description: '自動生成 50+ 種商業報表', rating: 4.8, reviews: 2341, price: 29, category: '數據分析', icon: '📊' },
             { id: 'p2', name: 'LINE 官方帳號整合', description: '在 CRM 內直接管理 LINE 訊息', rating: 4.9, reviews: 1876, price: 39, category: '通訊整合', icon: '📱' },
@@ -875,7 +917,7 @@
             const [customers, setCustomers] = useState([]);
             const [deals, setDeals] = useState([]);
             const [interactions, setInteractions] = useState([]);
-            const [team] = useState(seedTeam);
+            const [team, setTeam] = useState([]);
             const [wishes, setWishes] = useLocalStorage('wishes', seedWishes);
             const [customerFieldTemplate, setCustomerFieldTemplate] = useLocalStorage('customerFieldTemplate', []);
             const [scheduleFieldTemplate, setScheduleFieldTemplate] = useLocalStorage('scheduleFieldTemplate', []);
@@ -889,6 +931,12 @@
             const voteWishByTitle = (title) => { setWishes(prev => prev.map(w => w.title === title ? { ...w, votes: w.votes + 1 } : w)); toast('已催更 +1'); };
 
             // -- 從 PocketBase 載入資料 --
+            const reloadTeam = async function() {
+                try {
+                    var teamData = await pbClient.listAllTeamData();
+                    setTeam(teamData);
+                } catch (err) { console.warn('載入團隊資料失敗:', err); }
+            };
             const loadAllData = async function() {
                 try {
                     var [c, d, i] = await Promise.all([
@@ -899,6 +947,7 @@
                     setCustomers(c);
                     setDeals(d);
                     setInteractions(i);
+                    reloadTeam();
                 } catch (err) {
                     console.error('載入資料失敗:', err);
                     toast('載入資料失敗，請重新整理', 'error');
@@ -906,6 +955,17 @@
                 setDataLoading(false);
             };
             useEffect(function() { loadAllData(); }, []);
+
+            const handleAddTeamMember = async function(email) {
+                await pbClient.addTeamMember(email);
+                toast('已新增下線');
+                reloadTeam();
+            };
+            const handleRemoveTeamMember = async function(userId) {
+                await pbClient.removeTeamMember(userId);
+                toast('已移除下線');
+                reloadTeam();
+            };
 
             // -- CRUD: Customers --
             const addCustomer = async function(c) {
@@ -1061,7 +1121,7 @@
                 } catch (err) { console.error(err); toast('刪除筆記失敗', 'error'); }
             };
 
-            const ctx = { user, customers, deals, interactions, team, wishes, addCustomer, updateCustomer, deleteCustomer, addDeal, updateDeal, deleteDeal, addInteraction, updateInteraction, deleteInteraction, getCustomer, voteWish, voteWishByTitle, setWishes, toast, globalSearch, setCurrentView, customerSort, setCustomerSort, moveCustomer, completeContact, setCompleteContactModal, completeContactModal, rescheduleCustomer, setRescheduleModal, rescheduleModal, addSchedule, removeSchedule, setAddScheduleModal, addScheduleModal, focusCustomerId, setFocusCustomerId, customerFocusFilter, setCustomerFocusFilter, customerFieldTemplate, setCustomerFieldTemplate, scheduleFieldTemplate, setScheduleFieldTemplate };
+            const ctx = { user, customers, deals, interactions, team, wishes, addCustomer, updateCustomer, deleteCustomer, addDeal, updateDeal, deleteDeal, addInteraction, updateInteraction, deleteInteraction, getCustomer, voteWish, voteWishByTitle, setWishes, toast, globalSearch, setCurrentView, customerSort, setCustomerSort, moveCustomer, completeContact, setCompleteContactModal, completeContactModal, rescheduleCustomer, setRescheduleModal, rescheduleModal, addSchedule, removeSchedule, setAddScheduleModal, addScheduleModal, focusCustomerId, setFocusCustomerId, customerFocusFilter, setCustomerFocusFilter, customerFieldTemplate, setCustomerFieldTemplate, scheduleFieldTemplate, setScheduleFieldTemplate, handleAddTeamMember, handleRemoveTeamMember, reloadTeam };
 
             const voiceLocked = true;
             const navItems = [
@@ -1213,12 +1273,12 @@
             const startOfWeek = new Date(startOfToday); startOfWeek.setDate(startOfWeek.getDate() - startOfWeek.getDay());
             const weekClosedValue = deals.filter(d => d.stage === 'closed').reduce((s, d) => s + (d.value || 0), 0);
             const todayNewCustomers = customers.filter(c => c.createdAt >= startOfToday.getTime() && c.createdAt < startOfTomorrow.getTime()).length;
-            const userTeam = ctx.team || [];
-            const displayName = ctx.user.email ? ctx.user.email.split('@')[0] : (ctx.user.name || '');
-            const userMember = userTeam.find(m => m.name === displayName);
-            const monthTarget = userMember ? userMember.target : userTeam.reduce((s, m) => s + m.target, 0);
-            const monthValue = userMember ? userMember.value : userTeam.reduce((s, m) => s + m.value, 0);
+            const myClosedDeals = deals.filter(d => d.stage === 'closed');
+            const monthValue = myClosedDeals.reduce((s, d) => s + (d.value || 0), 0);
+            const monthTarget = 300000;
             const targetPct = monthTarget > 0 ? (monthValue / monthTarget) * 100 : 0;
+            const teamMemberCount = (ctx.team || []).length;
+            const teamTotalValue = (ctx.team || []).reduce((s, m) => s + m.value, 0);
 
             const recentInter = [...interactions].sort((a, b) => b.createdAt - a.createdAt).slice(0, 5);
             const typeIcons = { call: '📞', email: '📧', meeting: '📅', note: '📝' };
@@ -2854,59 +2914,148 @@
 
         // ==================== TEAM MANAGEMENT ====================
         function TeamManagement({ ctx }) {
-            const { team, deals, customers } = ctx;
+            const { team, toast, handleAddTeamMember, handleRemoveTeamMember } = ctx;
             const [selectedMember, setSelectedMember] = useState(null);
+            const [addEmail, setAddEmail] = useState('');
+            const [addLoading, setAddLoading] = useState(false);
+            const [addError, setAddError] = useState('');
+
             const totalValue = team.reduce((s, m) => s + m.value, 0);
-            const totalTarget = team.reduce((s, m) => s + m.target, 0);
-            const progress = totalTarget > 0 ? (totalValue / totalTarget) * 100 : 0;
             const sorted = [...team].sort((a, b) => b.value - a.value);
+
+            const handleAdd = async function(e) {
+                e.preventDefault();
+                if (!addEmail.trim()) return;
+                setAddError('');
+                setAddLoading(true);
+                try {
+                    await handleAddTeamMember(addEmail.trim());
+                    setAddEmail('');
+                } catch (err) {
+                    setAddError(err.message || '新增失敗');
+                }
+                setAddLoading(false);
+            };
+
+            const handleRemove = async function(memberId, memberName) {
+                if (!confirm('確定要移除「' + memberName + '」？')) return;
+                try { await handleRemoveTeamMember(memberId); } catch (err) { toast('移除失敗', 'error'); }
+            };
+
+            const detail = selectedMember ? team.find(m => m.id === selectedMember) : null;
 
             return (
                 <div>
                     <div style={{ marginBottom: '1.5rem' }}>
                         <h2 className="page-title">👔 團隊管理</h2>
-                        <p className="page-subtitle">監控團隊表現與下線業績</p>
+                        <p className="page-subtitle">管理下線成員，查看團隊業績</p>
                     </div>
 
+                    {/* 新增下線 */}
                     <div className="card" style={{ marginBottom: '1.5rem' }}>
-                        <h3 style={{ fontWeight: 600, fontSize: '1.05rem', marginBottom: '0.75rem' }}>本月團隊業績</h3>
-                        <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem', marginBottom: '0.75rem' }}>
-                            <span style={{ fontSize: '2rem', fontWeight: 700, color: '#F97316' }}>${totalValue.toLocaleString()}</span>
-                            <span style={{ color: '#94A3B8' }}>/ ${totalTarget.toLocaleString()}</span>
-                        </div>
-                        <div className="progress-bar"><div className="progress-fill" style={{ width: `${Math.min(progress, 100)}%` }}></div></div>
-                        <p style={{ color: '#94A3B8', fontSize: '0.8rem', marginTop: '0.35rem' }}>{progress.toFixed(1)}% 完成</p>
+                        <h3 style={{ fontWeight: 600, fontSize: '1.05rem', marginBottom: '0.75rem' }}>新增下線</h3>
+                        <form onSubmit={handleAdd} style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                            <input type="email" value={addEmail} onChange={e => setAddEmail(e.target.value)}
+                                placeholder="輸入下線的註冊 Email" required className="auth-input" style={{ flex: 1 }} />
+                            <button type="submit" className="btn-primary" disabled={addLoading}
+                                style={{ padding: '0.65rem 1.25rem', fontSize: '0.9rem', whiteSpace: 'nowrap' }}>
+                                {addLoading ? '處理中...' : '新增'}
+                            </button>
+                        </form>
+                        {addError && <p style={{ color: '#EF4444', fontSize: '0.8rem', marginTop: '0.5rem' }}>{addError}</p>}
                     </div>
 
-                    <div className="card">
-                        <h3 style={{ fontWeight: 600, fontSize: '1.05rem', marginBottom: '1rem' }}>🏆 業績排行</h3>
-                        {sorted.map((member, index) => {
-                            const perf = member.target > 0 ? (member.value / member.target) * 100 : 0;
-                            return (
-                                <div key={member.id} onClick={() => setSelectedMember(selectedMember === member.id ? null : member.id)}
-                                    style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.85rem', background: 'rgba(30,41,59,0.35)', borderRadius: '10px', marginBottom: '0.5rem', cursor: 'pointer', transition: 'all 0.2s' }}>
-                                    <span style={{ fontSize: '1.3rem', minWidth: '1.75rem', textAlign: 'center' }}>
-                                        {index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}`}
-                                    </span>
-                                    <div className="avatar avatar-sm">{member.name.charAt(0)}</div>
-                                    <div style={{ flex: 1 }}>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.15rem' }}>
-                                            <p style={{ fontWeight: 600, fontSize: '0.9rem' }}>{member.name}</p>
-                                            {perf < 70 && <span className="badge badge-danger">需要協助</span>}
-                                        </div>
-                                        <p style={{ color: '#94A3B8', fontSize: '0.8rem' }}>{member.deals} 筆成交 · ${member.value.toLocaleString()}</p>
-                                        <div className="progress-bar" style={{ marginTop: '0.35rem', height: 4 }}>
-                                            <div className="progress-fill" style={{ width: `${Math.min(perf, 100)}%`, background: perf >= 100 ? '#10B981' : perf >= 70 ? '#F59E0B' : '#EF4444' }}></div>
-                                        </div>
+                    {team.length > 0 ? (
+                        <>
+                            {/* 團隊業績總覽 */}
+                            <div className="card" style={{ marginBottom: '1.5rem' }}>
+                                <h3 style={{ fontWeight: 600, fontSize: '1.05rem', marginBottom: '0.75rem' }}>團隊業績總覽</h3>
+                                <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
+                                    <div>
+                                        <p style={{ color: '#94A3B8', fontSize: '0.8rem' }}>下線人數</p>
+                                        <p style={{ fontSize: '1.5rem', fontWeight: 700, color: '#F97316' }}>{team.length}</p>
                                     </div>
-                                    <div style={{ textAlign: 'right' }}>
-                                        <p style={{ color: perf >= 100 ? '#10B981' : perf >= 70 ? '#F59E0B' : '#EF4444', fontWeight: 700, fontSize: '1.15rem' }}>{perf.toFixed(0)}%</p>
-                                        <p style={{ color: '#94A3B8', fontSize: '0.7rem' }}>達成率</p>
+                                    <div>
+                                        <p style={{ color: '#94A3B8', fontSize: '0.8rem' }}>總成交金額</p>
+                                        <p style={{ fontSize: '1.5rem', fontWeight: 700, color: '#F97316' }}>${totalValue.toLocaleString()}</p>
+                                    </div>
+                                    <div>
+                                        <p style={{ color: '#94A3B8', fontSize: '0.8rem' }}>總成交筆數</p>
+                                        <p style={{ fontSize: '1.5rem', fontWeight: 700, color: '#F97316' }}>{team.reduce((s, m) => s + m.deals, 0)}</p>
+                                    </div>
+                                    <div>
+                                        <p style={{ color: '#94A3B8', fontSize: '0.8rem' }}>總客戶數</p>
+                                        <p style={{ fontSize: '1.5rem', fontWeight: 700, color: '#F97316' }}>{team.reduce((s, m) => s + m.totalCustomers, 0)}</p>
                                     </div>
                                 </div>
-                            );
-                        })}
-                    </div>
+                            </div>
+
+                            {/* 下線列表 */}
+                            <div className="card">
+                                <h3 style={{ fontWeight: 600, fontSize: '1.05rem', marginBottom: '1rem' }}>👥 下線列表</h3>
+                                {sorted.map((member, index) => (
+                                    <div key={member.id}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.85rem', background: selectedMember === member.id ? 'rgba(249,115,22,0.1)' : 'rgba(30,41,59,0.35)', borderRadius: '10px', marginBottom: '0.5rem', cursor: 'pointer', transition: 'all 0.2s' }}
+                                            onClick={() => setSelectedMember(selectedMember === member.id ? null : member.id)}>
+                                            <span style={{ fontSize: '1.3rem', minWidth: '1.75rem', textAlign: 'center' }}>
+                                                {index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}`}
+                                            </span>
+                                            <div className="avatar avatar-sm">{member.name.charAt(0)}</div>
+                                            <div style={{ flex: 1 }}>
+                                                <p style={{ fontWeight: 600, fontSize: '0.9rem' }}>{member.name}</p>
+                                                <p style={{ color: '#94A3B8', fontSize: '0.75rem' }}>{member.email}</p>
+                                                <p style={{ color: '#94A3B8', fontSize: '0.8rem', marginTop: '0.15rem' }}>
+                                                    {member.totalCustomers} 位客戶 · {member.totalDeals} 筆交易 · {member.deals} 筆成交 · ${member.value.toLocaleString()}
+                                                </p>
+                                            </div>
+                                            <button className="btn-secondary" style={{ padding: '0.25rem 0.5rem', fontSize: '0.7rem', color: '#EF4444', borderColor: 'rgba(239,68,68,0.3)' }}
+                                                onClick={e => { e.stopPropagation(); handleRemove(member.id, member.name); }}>移除</button>
+                                        </div>
+
+                                        {/* 展開詳情 */}
+                                        {selectedMember === member.id && detail && (
+                                            <div style={{ padding: '0.75rem 1rem', marginBottom: '0.75rem', background: 'rgba(30,41,59,0.2)', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.1)' }}>
+                                                <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '1rem' }}>
+                                                    <div>
+                                                        <h4 style={{ fontWeight: 600, fontSize: '0.9rem', marginBottom: '0.5rem' }}>客戶列表 ({detail.customers.length})</h4>
+                                                        {detail.customers.length === 0 && <p style={{ color: '#64748B', fontSize: '0.8rem' }}>尚無客戶</p>}
+                                                        {detail.customers.slice(0, 10).map(c => (
+                                                            <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.35rem 0', fontSize: '0.8rem' }}>
+                                                                <span>{c.name || '未命名'}</span>
+                                                                <span style={{ color: '#94A3B8' }}>{c.phone || ''}</span>
+                                                                <span className={'badge ' + (STATUS_MAP[c.status]?.badge || 'badge-info')} style={{ fontSize: '0.65rem' }}>
+                                                                    {STATUS_MAP[c.status]?.label || c.status}
+                                                                </span>
+                                                            </div>
+                                                        ))}
+                                                        {detail.customers.length > 10 && <p style={{ color: '#64748B', fontSize: '0.75rem', marginTop: '0.25rem' }}>...還有 {detail.customers.length - 10} 位</p>}
+                                                    </div>
+                                                    <div>
+                                                        <h4 style={{ fontWeight: 600, fontSize: '0.9rem', marginBottom: '0.5rem' }}>交易管道 ({detail.allDeals.length})</h4>
+                                                        {detail.allDeals.length === 0 && <p style={{ color: '#64748B', fontSize: '0.8rem' }}>尚無交易</p>}
+                                                        {detail.allDeals.slice(0, 10).map(d => (
+                                                            <div key={d.id} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.35rem 0', fontSize: '0.8rem' }}>
+                                                                <span>{d.title || '未命名'}</span>
+                                                                <span style={{ color: '#F97316', fontWeight: 600 }}>${(d.value || 0).toLocaleString()}</span>
+                                                                <span className="badge badge-info" style={{ fontSize: '0.65rem' }}>{d.stage}</span>
+                                                            </div>
+                                                        ))}
+                                                        {detail.allDeals.length > 10 && <p style={{ color: '#64748B', fontSize: '0.75rem', marginTop: '0.25rem' }}>...還有 {detail.allDeals.length - 10} 筆</p>}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </>
+                    ) : (
+                        <div className="card" style={{ textAlign: 'center', padding: '3rem 2rem' }}>
+                            <p style={{ fontSize: '2.5rem', marginBottom: '1rem' }}>👥</p>
+                            <p style={{ fontWeight: 600, fontSize: '1.1rem', marginBottom: '0.5rem' }}>尚無下線成員</p>
+                            <p style={{ color: '#94A3B8' }}>在上方輸入下線的 Email 來建立團隊</p>
+                        </div>
+                    )}
                 </div>
             );
         }
