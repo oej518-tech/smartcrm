@@ -444,7 +444,7 @@
 
         const pbClient = {
             register: function(email, password, passwordConfirm) {
-                return pb.collection('users').create({ email, password, passwordConfirm });
+                return pb.collection('users').create({ email, password, passwordConfirm, emailVisibility: true });
             },
             login: function(email, password) {
                 return pb.collection('users').authWithPassword(email, password);
